@@ -143,7 +143,7 @@ func (s *SqliteStorage) ensureTableSetup() error {
   	key_hash char(40) NOT NULL,
   	key TEXT NOT NULL,
   	value BLOB,
-  	modified  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  	modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   	PRIMARY KEY (key_hash)
 	)`
 	_, err = tx.ExecContext(ctx, dataTable)
@@ -154,10 +154,23 @@ func (s *SqliteStorage) ensureTableSetup() error {
   	CREATE TABLE IF NOT EXISTS certmagic_locks (
   	key_hash char(40) NOT NULL,
   	key TEXT NOT NULL,
-  	expires TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  	expires TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   	PRIMARY KEY (key_hash)
 	)`
 	_, err = tx.ExecContext(ctx, lockTable)
+	if err != nil {
+		return err
+	}
+
+	triggerUpdate := `
+	CREATE TRIGGER if not exists Trg_LastUpdated
+	AFTER UPDATE ON certmagic_data
+	FOR EACH ROW
+	BEGIN
+	UPDATE certmagic_data SET modified = CURRENT_TIMESTAMP WHERE key_hash = OLD.key_hash;
+	END
+	`
+	_, err = tx.ExecContext(ctx, triggerUpdate)
 	if err != nil {
 		return err
 	}
@@ -185,9 +198,7 @@ func (s *SqliteStorage) Lock(ctx context.Context, key string) error {
 
 	expires := time.Now().Add(s.LockTimeout * time.Second)
 	key_hash := getMD5String(key)
-	caddy.Log().Named("storage.sqlite.sql").Debug(fmt.Sprintf("INSERT INTO certmagic_locks (key_hash,key, expires) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE expires = %s", key_hash, key, expires, expires))
-
-	if _, err := tx.ExecContext(ctx, "INSERT INTO certmagic_locks (key_hash,key, expires) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE expires = ?", key_hash, key, expires, expires); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO certmagic_locks (key_hash,key, expires) VALUES (?, ?, ?) ON CONFLICT(key_hash) DO UPDATE set expires = ?`, key_hash, key, expires, expires); err != nil {
 		return fmt.Errorf("failed to lock key: %s: %w", key, err)
 	}
 
@@ -215,8 +226,6 @@ func (s *SqliteStorage) isLocked(queryer queryer, key string) error {
 	key_hash := getMD5String(key)
 	current_timestamp := time.Now()
 
-	caddy.Log().Named("storage.sqlite.sql").Debug(fmt.Sprintf("select exists(select 1 from certmagic_locks where key_hash = %s and expires > %s)", key_hash, current_timestamp))
-
 	row := queryer.QueryRowContext(ctx, "select exists(select 1 from certmagic_locks where key_hash = ? and expires > ?)", key_hash, current_timestamp)
 	var locked bool
 	if err := row.Scan(&locked); err != nil {
@@ -233,8 +242,9 @@ func (s *SqliteStorage) Store(ctx context.Context, key string, value []byte) err
 	ctx, cancel := context.WithTimeout(ctx, s.QueryTimeout*time.Second)
 	defer cancel()
 	key_hash := getMD5String(key)
-	caddy.Log().Named("storage.sqlite.sql").Debug(fmt.Sprintf("INSERT INTO certmagic_data (key_hash, key, value) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE  value = %s, modified = current_timestamp", key_hash, key, value, value))
-	_, err := s.Database.ExecContext(ctx, "INSERT INTO certmagic_data (key_hash, key, value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE  value = ?, modified = current_timestamp", key_hash, key, value, value)
+	_, err := s.Database.ExecContext(ctx, `INSERT INTO certmagic_data (key_hash, key, value)
+	VALUES (?, ?, ?) ON CONFLICT(key_hash) DO UPDATE
+	set value = ?, modified = current_timestamp`, key_hash, key, value, value)
 	return err
 }
 
