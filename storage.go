@@ -32,13 +32,10 @@ func init() {
 func (c *SqliteStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		var value string
-
 		key := d.Val()
-
 		if !d.Args(&value) {
 			continue
 		}
-
 		switch key {
 		case "query_timeout":
 			QueryTimeout, err := strconv.Atoi(value)
@@ -198,7 +195,8 @@ func (s *SqliteStorage) Lock(ctx context.Context, key string) error {
 
 	expires := time.Now().Add(s.LockTimeout * time.Second)
 	key_hash := getMD5String(key)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO certmagic_locks (key_hash,key, expires) VALUES (?, ?, ?) ON CONFLICT(key_hash) DO UPDATE set expires = ?`, key_hash, key, expires, expires); err != nil {
+	query := `INSERT INTO certmagic_locks (key_hash,key, expires) VALUES (?, ?, ?) ON CONFLICT(key_hash) DO UPDATE set expires = ?`
+	if _, err := tx.ExecContext(ctx, query, key_hash, key, expires, expires); err != nil {
 		return fmt.Errorf("failed to lock key: %s: %w", key, err)
 	}
 
